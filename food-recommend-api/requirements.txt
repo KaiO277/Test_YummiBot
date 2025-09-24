@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+pandas
+sentence-transformers
+scikit-learn
+torch
