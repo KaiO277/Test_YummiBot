@@ -1,78 +1,88 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from pydantic import BaseModel
 import pandas as pd
 from sentence_transformers import SentenceTransformer, util
 import torch
-import joblib
-import os
+import re
 
-# =====================
-# 1. Load model + dataset
-# =====================
-print("🔄 Đang load model SBERT...")
+# ============================
+# 1. Khởi tạo app
+# ============================
+app = FastAPI(title="Food Recommendation API")
+
+# ============================
+# 2. Load dataset & SBERT model (chỉ load 1 lần khi start)
+# ============================
+df = pd.read_csv("merged_data.csv")  # cột: ten_mon, ingredients, link, ...
+df = df.dropna(subset=["ingredients", "ten_mon"])
+
 model = SentenceTransformer("keepitreal/vietnamese-sbert")
 
-print("📂 Đang load dataset...")
-df = pd.read_csv("merged_data.csv")
-df.dropna(inplace=True)
+# Load embeddings đã lưu hoặc encode mới
+try:
+    corpus_embeddings = torch.load("food_embeddings.pt")
+    print("✅ Loaded embeddings từ file food_embeddings.pt")
+except:
+    print("⚠️ Không tìm thấy embeddings, tiến hành encode...")
+    corpus = (df["ten_mon"] + " " + df["ingredients"]).tolist()
+    corpus_embeddings = model.encode(corpus, convert_to_tensor=True, show_progress_bar=True)
+    torch.save(corpus_embeddings, "food_embeddings.pt")
+    print("✅ Đã lưu embeddings vào food_embeddings.pt")
 
-corpus = df["ingredients"].astype(str).tolist()
-embedding_file = "embeddings.pkl"
+# ============================
+# 3. Hàm keyword overlap
+# ============================
+def keyword_overlap(query: str, text: str) -> float:
+    query_tokens = set(re.findall(r"\w+", query.lower()))
+    text_tokens = set(re.findall(r"\w+", text.lower()))
+    if not query_tokens:
+        return 0.0
+    return len(query_tokens & text_tokens) / len(query_tokens)
 
-# =====================
-# 2. Load hoặc tạo embeddings
-# =====================
-if os.path.exists(embedding_file):
-    print("📦 Đang load embeddings từ file...")
-    corpus_embeddings = joblib.load(embedding_file)
-else:
-    print("⚡ Tạo embeddings mới cho dataset...")
-    corpus_embeddings = model.encode(corpus, convert_to_tensor=True)
-    joblib.dump(corpus_embeddings, embedding_file)
-    print(f"✅ Đã lưu embeddings vào {embedding_file}")
+# ============================
+# 4. Hàm recommend
+# ============================
+def recommend_food(query: str, top_k: int = 5, alpha: float = 0.7):
+    query_embedding = model.encode(query, convert_to_tensor=True)
 
-print("🚀 API sẵn sàng!")
-
-# =====================
-# 3. Khởi tạo API
-# =====================
-app = FastAPI(
-    title="Food Recommendation API",
-    description="API gợi ý món ăn từ nguyên liệu (SBERT + FastAPI)",
-    version="1.1"
-)
-
-# Request body
-class RecommendRequest(BaseModel):
-    ingredients: str
-    top_k: int = 5
-
-# =====================
-# 4. Endpoint API
-# =====================
-@app.post("/recommend")
-def recommend_food(req: RecommendRequest):
-    query_embedding = model.encode(req.ingredients, convert_to_tensor=True)
-
-    hits = util.semantic_search(query_embedding, corpus_embeddings, top_k=req.top_k)[0]
+    # SBERT similarity
+    cos_scores = util.cos_sim(query_embedding, corpus_embeddings)[0]
+    top_results = torch.topk(cos_scores, k=top_k * 3)
 
     results = []
-    for hit in hits:
-        idx = hit["corpus_id"]
+    for score, idx in zip(top_results[0], top_results[1]):
+        row = df.iloc[idx.item()]
+        text = f"{row['ten_mon']} {row['ingredients']}"
 
-        # Lấy toàn bộ row dưới dạng dict
-        row_data = df.iloc[idx].to_dict()
-        row_data["similarity"] = round(float(hit["score"]), 3)
+        kw_score = keyword_overlap(query, text)
+        final_score = alpha * float(score) + (1 - alpha) * kw_score
 
-        results.append(row_data)
+        results.append({
+            "ten_mon": row["ten_mon"],
+            "ingredients": row["ingredients"],
+            "link": row.get("link", ""),
+            "similarity": float(score),
+            "keyword_score": kw_score,
+            "final_score": final_score
+        })
 
-    return {
-        "query": req.ingredients,
-        "recommendations": results
-    }
+    results = sorted(results, key=lambda x: x["final_score"], reverse=True)[:top_k]
+    return results
 
-# =====================
-# 5. Run server
-# =====================
-# Chạy bằng:
-# uvicorn app:app --reload
+# ============================
+# 5. API Endpoints
+# ============================
+
+class QueryRequest(BaseModel):
+    query: str
+    top_k: int = 5
+    alpha: float = 0.7
+
+@app.post("/recommend")
+def recommend(req: QueryRequest):
+    results = recommend_food(req.query, top_k=req.top_k, alpha=req.alpha)
+    return {"query": req.query, "results": results}
+
+@app.get("/")
+def root():
+    return {"message": "Food Recommendation API is running 🚀"}
