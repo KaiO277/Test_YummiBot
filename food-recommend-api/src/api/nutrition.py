@@ -1,14 +1,20 @@
 import os
 import google.generativeai as genai
+from google.generativeai.types import AsyncGenerateContentResponse
 import json
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import re
-from dotenv import load_dotenv
-load_dotenv()
+from dotenv import load_dotenv, find_dotenv
+from pathlib import Path
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-print(genai.list_models())
+dotenv_path = find_dotenv()
+print("Đường dẫn .env:", dotenv_path)
+load_dotenv(dotenv_path=dotenv_path)
+
+# ✅ Cấu hình Gemini với API key
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+print("GOOGLE_API_KEY:", os.getenv("GOOGLE_API_KEY"))
 
 router = APIRouter()
 
@@ -48,7 +54,18 @@ def split_ingredients(ingredients: str, max_len: int = 500) -> list[str]:
     return chunks
 
 def parse_nutrition_data(raw_text: str) -> dict:
-    clean_text = raw_text.strip().replace("```json", "").replace("```", "")
+    # 1. Tìm kiếm khối JSON thực tế (từ { đầu tiên đến } cuối cùng)
+    # re.DOTALL cho phép . khớp với cả ký tự xuống dòng
+    match = re.search(r"(\{.*\})", raw_text, re.DOTALL)
+    
+    if match:
+        clean_text = match.group(1)
+        # Loại bỏ các ký tự Markdown nếu chúng vẫn còn dính vào khối JSON (ví dụ: ```json)
+        clean_text = clean_text.replace("```json", "").replace("```", "").strip()
+    else:
+        # 2. Nếu không tìm thấy khối JSON rõ ràng, thực hiện làm sạch cơ bản
+        clean_text = raw_text.strip().replace("```json", "").replace("```", "")
+    
     try:
         return json.loads(clean_text)
     except json.JSONDecodeError as e:
@@ -56,9 +73,8 @@ def parse_nutrition_data(raw_text: str) -> dict:
         print(f"Phản hồi thô từ Gemini: {raw_text}")
         raise HTTPException(
             status_code=500,
-            detail="Có lỗi xảy ra khi parse JSON từ phản hồi của Gemini."
+            detail="Có lỗi xảy ra khi parse JSON từ phản hồi của Gemini. Hãy kiểm tra console để xem phản hồi thô."
         )
-
 @router.post("/nutrition")
 async def get_nutrition(payload: NutritionRequest):
     chunks = split_ingredients(payload.ingredients)
@@ -86,7 +102,8 @@ async def get_nutrition(payload: NutritionRequest):
         TRẢ LỜI CHỈ BẰNG JSON, KHÔNG THÊM BẤT KỲ VĂN BẢN, GIẢI THÍCH NÀO KHÁC.
         """
         try:
-            response = await model.generate_content_async(prompt)
+            # Sử dụng phương thức đồng bộ, KHÔNG dùng await
+            response = model.generate_content(prompt)
             nutrition_data = parse_nutrition_data(response.text)
             for key, value_str in nutrition_data.items():
                 match = re.search(r"(\d+(\.\d+)?)\s*(kcal|g|mg)?", value_str)
