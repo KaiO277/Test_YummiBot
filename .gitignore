@@ -2,3 +2,4 @@
 */merged_data.csv
 */embeddings.pkl
 **/__pycache__/
+.env
