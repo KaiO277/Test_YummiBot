@@ -7,7 +7,9 @@ router = APIRouter()
 
 @router.post("/recommend")
 def recommend(req: QueryRequest):
+    print("Request:", req)
     results = recommend_food(req.query, top_k=req.top_k, alpha=req.alpha)
+    print("Results:", results)
     return {"query": req.query, "results": results}
 
 router.include_router(nutrition_router)

@@ -41,9 +41,14 @@ class Recommender:
             final_score = alpha * float(score) + (1 - alpha) * kw_score
 
             results.append({
-                "ten_mon": row["ten_mon"],
-                "ingredients": row["ingredients"],
+                "ten_mon": row.get("ten_mon", ""),
+                "ingredients": row.get("ingredients", ""),
                 "link": row.get("link", ""),
+                "anh": row.get("anh", ""),
+                "mo_ta": row.get("mo_ta", ""),
+                "ready_html": row.get("ready_html", ""),
+                "step_html": row.get("step_html", ""),
+                "category": row.get("category", ""),
                 "similarity": float(score),
                 "keyword_score": kw_score,
                 "final_score": final_score
