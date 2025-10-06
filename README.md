@@ -29,7 +29,7 @@ pip install -r requirements.txt
 # Chạy dự án
 
 ```
-   uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
+   uvicorn src.main:app --reload --host 0.0.0.0 --port 8001
 ```
 
 # Test API
@@ -37,5 +37,5 @@ pip install -r requirements.txt
 Truy cập trình duyệt:
 
 ```
-http://127.0.0.1:8000/docs
+http://127.0.0.1:8001/docs
 ```
