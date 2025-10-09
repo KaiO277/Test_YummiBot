@@ -1,39 +1,47 @@
 import os
-import google.generativeai as genai
-from google.generativeai.types import AsyncGenerateContentResponse
 import json
+import re
+import asyncio # ✅ PHẢI CÓ DÒNG NÀY ĐỂ GIẢI QUYẾT LỖI 'await'
+from pathlib import Path
+from dotenv import load_dotenv, find_dotenv
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-import re
-from dotenv import load_dotenv, find_dotenv
-from pathlib import Path
+import google.generativeai as genai
+from google.api_core.exceptions import GoogleAPIError as APIError 
 
+# --- Cấu hình Ban đầu ---
 dotenv_path = find_dotenv()
 print("Đường dẫn .env:", dotenv_path)
 load_dotenv(dotenv_path=dotenv_path)
 
-# ✅ Cấu hình Gemini với API key
+# Cấu hình Gemini
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 print("GOOGLE_API_KEY:", os.getenv("GOOGLE_API_KEY"))
 
 router = APIRouter()
+
+# --- Định nghĩa Dữ liệu ---
 
 class NutritionRequest(BaseModel):
     ingredients: str
 
 DV_VALUES = {
     "calories": 2000,
-    "total_fat": 78,
-    "saturated_fat": 20,
-    "total_carbohydrate": 275,
-    "fiber": 28,
-    "protein": 50,
-    "calcium": 1300,
-    "iron": 18,
-    "sodium": 2300
+    "total_fat": 78,    # g
+    "saturated_fat": 20, # g
+    "total_carbohydrate": 275, # g
+    "fiber": 28,        # g
+    "protein": 50,      # g
+    "calcium": 1300,    # mg
+    "iron": 18,         # mg
+    "sodium": 2300      # mg
 }
 
+# --- Hàm Hỗ trợ ---
+
 def split_ingredients(ingredients: str, max_len: int = 500) -> list[str]:
+    """Chia chuỗi nguyên liệu thành các đoạn nhỏ để gửi tới API."""
     words = ingredients.split(", ")
     chunks = []
     current_chunk = []
@@ -54,39 +62,46 @@ def split_ingredients(ingredients: str, max_len: int = 500) -> list[str]:
     return chunks
 
 def parse_nutrition_data(raw_text: str) -> dict:
-    # 1. Tìm kiếm khối JSON thực tế (từ { đầu tiên đến } cuối cùng)
-    # re.DOTALL cho phép . khớp với cả ký tự xuống dòng
+    """Xử lý phản hồi raw từ Gemini để trích xuất dữ liệu JSON, sử dụng regex."""
+    # Tìm kiếm khối JSON thực tế ({...})
     match = re.search(r"(\{.*\})", raw_text, re.DOTALL)
     
     if match:
-        clean_text = match.group(1)
-        # Loại bỏ các ký tự Markdown nếu chúng vẫn còn dính vào khối JSON (ví dụ: ```json)
+        clean_text = match.group(1).strip()
+        # Loại bỏ các ký tự Markdown
         clean_text = clean_text.replace("```json", "").replace("```", "").strip()
     else:
-        # 2. Nếu không tìm thấy khối JSON rõ ràng, thực hiện làm sạch cơ bản
+        # Fallback làm sạch cơ bản
         clean_text = raw_text.strip().replace("```json", "").replace("```", "")
     
     try:
         return json.loads(clean_text)
     except json.JSONDecodeError as e:
-        print(f"Lỗi JSONDecodeError: {e}")
-        print(f"Phản hồi thô từ Gemini: {raw_text}")
+        print(f"LỖI DEBUG JSON: JSONDecodeError: {e}")
+        print(f"PHẢN HỒI THÔ: {raw_text}")
         raise HTTPException(
             status_code=500,
-            detail="Có lỗi xảy ra khi parse JSON từ phản hồi của Gemini. Hãy kiểm tra console để xem phản hồi thô."
+            detail="Gemini API không trả về định dạng JSON hợp lệ."
         )
+
+# --- Endpoint Chính ---
+
 @router.post("/nutrition")
 async def get_nutrition(payload: NutritionRequest):
+    """Endpoint phân tích dinh dưỡng của nguyên liệu sử dụng Gemini API."""
     chunks = split_ingredients(payload.ingredients)
     total_nutrition = {}
-    model = genai.GenerativeModel('gemini-pro')
+    
+    # Sử dụng mô hình mới, ổn định
+    model = genai.GenerativeModel('gemini-2.5-flash') 
 
     for chunk in chunks:
         prompt = f"""
         Phân tích dinh dưỡng của các nguyên liệu sau và trả về kết quả dưới dạng JSON. 
-        Mỗi thành phần dinh dưỡng phải có đơn vị.
+        Mỗi thành phần dinh dưỡng phải có đơn vị. Dữ liệu phải là tổng hợp của tất cả các nguyên liệu.
         Nguyên liệu: {chunk}
-        Ví dụ định dạng JSON:
+        
+        Ví dụ định dạng JSON (CẦN ĐÚNG KHÓA VÀ ĐƠN VỊ):
         {{
             "calories": "250 kcal",
             "total_fat": "10 g",
@@ -102,29 +117,50 @@ async def get_nutrition(payload: NutritionRequest):
         TRẢ LỜI CHỈ BẰNG JSON, KHÔNG THÊM BẤT KỲ VĂN BẢN, GIẢI THÍCH NÀO KHÁC.
         """
         try:
-            # Sử dụng phương thức đồng bộ, KHÔNG dùng await
-            response = model.generate_content(prompt)
+            # ✅ SỬA LỖI: Bọc cuộc gọi đồng bộ bằng asyncio.to_thread()
+            # Điều này cho phép chúng ta 'await' một hàm đồng bộ mà không chặn Event Loop.
+            response = await asyncio.to_thread(model.generate_content, prompt)
+            
+            # Kiểm tra phản hồi rỗng
+            if not response.text:
+                 raise APIError(f"API không trả về nội dung hợp lệ (response.text rỗng) cho chunk: {chunk}")
+                 
             nutrition_data = parse_nutrition_data(response.text)
+            
+            # Cộng dồn giá trị dinh dưỡng
             for key, value_str in nutrition_data.items():
                 match = re.search(r"(\d+(\.\d+)?)\s*(kcal|g|mg)?", value_str)
                 if match:
                     num = float(match.group(1))
                     unit = match.group(3) if match.group(3) else ""
-                    if unit == "mg" and key != "calcium":
+                    
+                    # Chuẩn hóa đơn vị: Chuyển mg sang g (trừ Calcium và Sodium)
+                    if unit == "mg" and key not in ["calcium", "sodium"]:
                         num /= 1000
+                        
                     total_nutrition[key] = total_nutrition.get(key, 0) + num
+                    
         except HTTPException as e:
             raise e
-        except Exception as e:
+        except APIError as e:
+            print(f"LỖI DEBUG API: GoogleAPIError xảy ra: {e}")
             raise HTTPException(
                 status_code=500,
-                detail=f"Có lỗi xảy ra khi gọi API Gemini: {e}"
+                detail=f"Lỗi API Gemini: {e}. Vui lòng kiểm tra API Key và hạn mức sử dụng."
+            )
+        except Exception as e:
+            print(f"LỖI DEBUG KHÔNG XÁC ĐỊNH: Exception xảy ra: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Có lỗi xảy ra không xác định trong quá trình xử lý: {e}"
             )
 
+    # Tính toán phần trăm giá trị dinh dưỡng hàng ngày (Daily Value).
     daily_values_percent = {}
     for key, value in total_nutrition.items():
         if key in DV_VALUES:
             daily_values_percent[key] = round((value / DV_VALUES[key]) * 100, 2)
+    
     return {
         "nutrition_values": total_nutrition,
         "daily_values_percent": daily_values_percent
