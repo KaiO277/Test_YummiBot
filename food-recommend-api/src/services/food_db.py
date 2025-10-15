@@ -1,9 +1,22 @@
 import sqlite3
 from pathlib import Path
 import pandas as pd
+import os
 
 BASE_DIR = Path(__file__).resolve().parents[3]  # Thư mục gốc dự án
 DB_PATH = BASE_DIR / "food-recommend-api\\food_data.db"
+
+def get_all_categories():
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query("SELECT id, category_name, category_image_local FROM categories", conn)
+    conn.close()
+
+    # ✅ Chuyển local path sang đường dẫn /static/
+    df["category_image_url"] = df["category_image_local"].apply(
+        lambda x: f"/static/{os.path.basename(x)}" if x else None
+    )
+
+    return df.to_dict(orient="records")
 
 def get_top_foods(limit: int = 6, category: str | None = None):
     conn = sqlite3.connect(DB_PATH)

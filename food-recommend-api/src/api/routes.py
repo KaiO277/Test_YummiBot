@@ -2,10 +2,17 @@ from fastapi import APIRouter
 from src.models.schemas import QueryRequest
 from src.services.recommender import recommend_food
 from .nutrition import router as nutrition_router
-from src.services.food_db import get_top_foods, get_food_detail
+from src.services.food_db import get_top_foods, get_food_detail, get_all_categories
 from fastapi import Query
-
 router = APIRouter()
+
+@router.get("/categories")
+def list_categories():
+    """
+    Lấy danh sách tất cả category (kèm ảnh)
+    """
+    data = get_all_categories()
+    return {"count": len(data), "results": data}
 
 @router.post("/recommend")
 def recommend(req: QueryRequest):
