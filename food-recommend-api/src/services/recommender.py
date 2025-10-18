@@ -56,6 +56,7 @@ class Recommender:
             final_score = base_score * (1 - beta) + beta * row["views_norm"]
 
             results.append({
+                "id": int(row.get("id", 0)) if pd.notna(row.get("id", 0)) else 0,
                 "ten_mon": row.get("ten_mon", ""),
                 "ingredients": row.get("ingredients", ""),
                 "link": row.get("link", ""),
